@@ -1,2 +1,2 @@
-export local="true"
+export local=true
 cargo leptos watch
