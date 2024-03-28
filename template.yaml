@@ -1,0 +1,232 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Deploying Todo Application to ECS Fargate using AWS SAM
+
+Parameters:
+  ImageRepository:
+    Type: String
+    Default: XXXXXXXXXXXX.dkr.ecr.eu-west-1.amazonaws.com/todo-fargate:latest
+
+Resources:
+
+  ## LOGGING
+
+  CloudWatchLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${AWS::StackName}
+      RetentionInDays: 7
+
+  ## NETWORK
+
+  TodoVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+
+  TodoInternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  TodoInternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref TodoInternetGateway
+      VpcId: !Ref TodoVpc
+
+  SubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [ 0, !GetAZs "" ]
+      CidrBlock: 10.0.0.0/24
+      VpcId: !Ref TodoVpc
+      MapPublicIpOnLaunch: true
+
+  SubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [ 1, !GetAZs "" ]
+      CidrBlock: 10.0.1.0/24
+      VpcId: !Ref TodoVpc
+      MapPublicIpOnLaunch: true
+
+  TodoRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref TodoVpc
+
+  TodoRouteTableAssociationA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref TodoRouteTable
+      SubnetId: !Ref SubnetA
+
+  TodoRouteTableAssociationB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref TodoRouteTable
+      SubnetId: !Ref SubnetB
+
+  TodoInternetGatewayRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref TodoRouteTable
+      DestinationCidrBlock: "0.0.0.0/0"
+      GatewayId: !Ref TodoInternetGateway
+
+  TodoSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Todo Security Group
+      VpcId: !Ref TodoVpc
+
+  TodoSecurityGroupIngressHttp:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref TodoSecurityGroup
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      CidrIp: 0.0.0.0/0
+
+  TodoSecurityGroupIngressHttps:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref TodoSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0
+
+  TodoSecurityGroupIngressSubNet:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref TodoSecurityGroup
+      IpProtocol: "-1"
+      SourceSecurityGroupId: !Ref TodoSecurityGroup
+
+  TodoSecurityGroupEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref TodoSecurityGroup
+      IpProtocol: "-1"
+      CidrIp: 0.0.0.0/0
+
+  ## DATABASE
+
+  TodoDB:
+    Type: AWS::Serverless::SimpleTable
+    Region: eu-west-1
+    ExecutionRoleArn: !GetAtt TodoExecutionRole.Arn
+    Properties:
+      PrimaryKey:
+        Name: id
+        Type: String
+      ProvisionedThroughput:
+        ReadCapacityUnits: 2
+        WriteCapacityUnits: 2
+      TableName: TodoTable
+
+  ## ECS Cluster (Fargate)
+
+  TodoCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: todo-fargate-cluster
+
+  TodoExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: ecsTaskExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:GetItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:PutItem
+                Resource: "arn:aws:dynamodb:*:*:table/TodoTable"
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecs:RunTask
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:DescribeLogStreams
+                  - logs:DescribeLogGroups
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  TodoDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ExecutionRoleArn: !GetAtt TodoExecutionRole.Arn
+      TaskRoleArn: !GetAtt TodoExecutionRole.Arn
+      Family: todo-web-server
+      Cpu: 256
+      Memory: 512
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ContainerDefinitions:
+        - Name: web-server
+          Image: !Ref ImageRepository
+          PortMappings:
+            - ContainerPort: 80
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref CloudWatchLogsGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: !Ref AWS::StackName
+
+  TodoService:
+    DependsOn:
+      - TodoDB
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref TodoCluster
+      TaskDefinition: !Ref TodoDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref TodoSecurityGroup
+          Subnets:
+            - !Ref SubnetA
+            - !Ref SubnetB
+
+Outputs:
+
+  ECSService:
+    Description: The created Service.
+    Value: !Ref TodoService
+
+  ECSTaskDefinition:
+    Description: The created Task definition.
+    Value: !Ref TodoDefinition

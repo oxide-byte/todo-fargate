@@ -9,6 +9,9 @@ pkg
 # Docker DynamoDB File
 /docker/dynamodb/shared-local-instance.db
 
+# AWS
+.aws-sam
+
 #IntelliJ
 .idea
 *.iml

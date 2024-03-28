@@ -40,10 +40,10 @@ WORKDIR /app
 
 # Set any required env variables and
 ENV RUST_LOG="info"
-ENV LEPTOS_SITE_ADDR="0.0.0.0:8080"
+ENV LEPTOS_SITE_ADDR="0.0.0.0:80"
 ENV LEPTOS_SITE_ROOT="site"
 ENV local=false
-EXPOSE 8080
+EXPOSE 80
 
 # -- NB: update binary name from "leptos_start" to match your app name in Cargo.toml --
 # Run the server
